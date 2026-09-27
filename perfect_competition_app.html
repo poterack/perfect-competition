@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Perfect Competition Explorer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: Georgia, 'Times New Roman', serif;
+      background: #f5f5f5;
+      color: #222;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 28px 24px 32px;
+      gap: 0;
+    }
+
+    h1 {
+      font-size: 1.3em;
+      font-weight: normal;
+      color: #1a2a3a;
+      margin-bottom: 4px;
+      letter-spacing: 0.01em;
+    }
+
+    .subtitle {
+      font-size: 0.83em;
+      color: #777;
+      font-style: italic;
+      margin-bottom: 22px;
+    }
+
+    #graphs {
+      display: flex;
+      gap: 28px;
+      align-items: flex-start;
+    }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+    }
+
+    .panel-title {
+      font-size: 1.0em;
+      font-weight: bold;
+      color: #1a2a3a;
+      margin-bottom: 2px;
+    }
+
+    .panel-hint {
+      font-size: 0.76em;
+      color: #999;
+      font-style: italic;
+      margin-bottom: 5px;
+      height: 1.1em;
+    }
+
+    svg {
+      display: block;
+      background: #fff;
+      border: 1px solid #d8d8d8;
+      border-radius: 3px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+    }
+
+    #profit-display {
+      margin-top: 18px;
+      padding: 13px 32px;
+      background: #fff;
+      border: 1px solid #d8d8d8;
+      border-radius: 5px;
+      font-size: 1.05em;
+      min-width: 480px;
+      text-align: center;
+      min-height: 2.6em;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+    }
+
+    .profit-text   { color: #1a6b1a; font-weight: bold; }
+    .loss-text     { color: #8B1C1C; font-weight: bold; }
+    .shutdown-text { color: #555; }
+
+    .legend {
+      display: flex;
+      gap: 20px;
+      margin-top: 14px;
+      font-size: 0.8em;
+      color: #444;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .leg { display: flex; align-items: center; gap: 5px; }
+    .leg-line { width: 24px; height: 3px; border-radius: 2px; }
+  </style>
+</head>
+<body>
+
+<h1>Perfect Competition Explorer</h1>
+<p class="subtitle">Drag the S or D curve in the market graph to shift the equilibrium price</p>
+
+<div id="graphs">
+  <div class="panel">
+    <div class="panel-title">Firm</div>
+    <div class="panel-hint"></div>
+    <svg id="firmSVG" width="380" height="350"></svg>
+  </div>
+  <div class="panel">
+    <div class="panel-title">Market</div>
+    <div class="panel-hint">Drag S or D to shift</div>
+    <svg id="marketSVG" width="380" height="350"></svg>
+  </div>
+</div>
+
+<div id="profit-display">—</div>
+
+<div class="legend">
+  <div class="leg"><div class="leg-line" style="background:#228B22"></div><span>d = MR (firm demand)</span></div>
+  <div class="leg"><div class="leg-line" style="background:#B8960C"></div><span>MC</span></div>
+  <div class="leg"><div class="leg-line" style="background:#E87B00"></div><span>ATC</span></div>
+  <div class="leg"><div class="leg-line" style="background:#4682B4"></div><span>AVC / D (market)</span></div>
+  <div class="leg"><div class="leg-line" style="background:#8B1C1C"></div><span>S (market)</span></div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────
+// CURVE DATA  (from slide TikZ coordinates)
+// ─────────────────────────────────────────────────────────────
+const MC_PTS  = [{q:0.30,p:0.30},{q:1.00,p:0.65},{q:2.00,p:1.15},{q:2.80,p:1.60},{q:3.50,p:2.20},{q:4.50,p:3.30},{q:5.20,p:4.20}];
+const ATC_PTS = [{q:0.55,p:4.20},{q:1.00,p:2.70},{q:1.80,p:1.95},{q:2.80,p:1.60},{q:3.80,p:1.88},{q:4.50,p:2.30},{q:5.20,p:2.85}];
+const AVC_PTS = [{q:0.55,p:2.80},{q:1.00,p:1.60},{q:1.50,p:1.30},{q:2.00,p:1.15},{q:2.50,p:1.17},{q:3.00,p:1.20},{q:4.00,p:1.60},{q:5.00,p:2.25},{q:5.20,p:2.50}];
+const MIN_AVC = 1.15;
+
+// ─────────────────────────────────────────────────────────────
+// MARKET STATE
+// Supply:  P = supplyA + SS * Q
+// Demand:  P = demandA − DS * Q
+// Initial equilibrium: demandA=7, supplyA=0 → Q*≈3.9, P*=3.5  (visible profit)
+// ─────────────────────────────────────────────────────────────
+let demandA = 7.0, supplyA = 0.0;
+const DS = 0.9, SS = 0.9;
+const Q_SCALE = 100;   // display q* as units × 100 so profit numbers are larger
+
+// ─────────────────────────────────────────────────────────────
+// SVG LAYOUT  (shared for both panels)
+// ─────────────────────────────────────────────────────────────
+const ML = 54, MR = 24, MT = 18, MB = 48;
+const SVG_W = 380, SVG_H = 350;
+const PW = SVG_W - ML - MR;   // plot width  px
+const PH = SVG_H - MT - MB;   // plot height px
+
+// Domain — FP === MP so the same price value sits at the same pixel height
+// in both panels, making P* lines align vertically.
+const FQ = 5.8, FP = 5.5;    // firm   q-max, P-max
+const MQ = 6.5, MP = 5.5;    // market Q-max, P-max  (MP = FP intentionally)
+
+// Converters
+const fx  = q => ML + (q  / FQ) * PW;
+const fy  = p => MT + PH - (p  / FP) * PH;
+const mx  = Q => ML + (Q  / MQ) * PW;
+const my  = P => MT + PH - (P  / MP) * PH;
+
+// Inverse market converter (SVG px → model coords)
+const svgToMkt = (sx, sy) => ({
+  Q: (sx - ML) / PW * MQ,
+  P:  MP - (sy - MT) / PH * MP
+});
+
+const pxPerMP = PH / MP;   // pixels per market-P unit (for drag scaling)
+
+// ─────────────────────────────────────────────────────────────
+// INTERPOLATION
+// ─────────────────────────────────────────────────────────────
+function atQ(pts, q) {
+  if (q <= pts[0].q) return pts[0].p;
+  if (q >= pts[pts.length-1].q) return pts[pts.length-1].p;
+  for (let i = 0; i < pts.length - 1; i++) {
+    if (pts[i].q <= q && q <= pts[i+1].q) {
+      const t = (q - pts[i].q) / (pts[i+1].q - pts[i].q);
+      return pts[i].p + t * (pts[i+1].p - pts[i].p);
+    }
+  }
+}
+
+// Inverse of MC: given price, find q on the rising MC curve
+function qStarFromMC(P) {
+  if (P <= MC_PTS[0].p) return MC_PTS[0].q;
+  if (P >= MC_PTS[MC_PTS.length-1].p) return MC_PTS[MC_PTS.length-1].q;
+  for (let i = 0; i < MC_PTS.length - 1; i++) {
+    if (MC_PTS[i].p <= P && P <= MC_PTS[i+1].p) {
+      const t = (P - MC_PTS[i].p) / (MC_PTS[i+1].p - MC_PTS[i].p);
+      return MC_PTS[i].q + t * (MC_PTS[i+1].q - MC_PTS[i].q);
+    }
+  }
+}
+
+function densePts(pts, n = 160) {
+  const q0 = pts[0].q, q1 = pts[pts.length-1].q;
+  const out = [];
+  for (let i = 0; i <= n; i++) {
+    const q = q0 + (i / n) * (q1 - q0);
+    out.push({ x: fx(q), y: fy(atQ(pts, q)) });
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────
+// SVG HELPERS
+// ─────────────────────────────────────────────────────────────
+const NS = 'http://www.w3.org/2000/svg';
+
+function mk(tag, attrs) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
+  return e;
+}
+
+function mkLine(x1, y1, x2, y2, attrs) {
+  return mk('line', { x1, y1, x2, y2, ...attrs });
+}
+
+function mkRect(x, y, w, h, attrs) {
+  return mk('rect', { x, y, width: w, height: h, ...attrs });
+}
+
+function mkText(x, y, s, attrs) {
+  const e = mk('text', { x, y, ...attrs });
+  e.textContent = s;
+  return e;
+}
+
+function mkPoly(pts, stroke, sw = 2.6, extra = {}) {
+  const d = pts.map(({ x, y }) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+  return mk('polyline', { points: d, fill: 'none', stroke, 'stroke-width': sw,
+    'stroke-linejoin': 'round', 'stroke-linecap': 'round', ...extra });
+}
+
+function drawAxes(svg, xLab, yLab, toX, toY, xMax, yMax) {
+  const bx = toX(0), by = toY(0);
+  // x-axis line + arrowhead
+  svg.appendChild(mkLine(bx, by, toX(xMax) + 14, by,
+    { stroke: '#333', 'stroke-width': 1.5 }));
+  svg.appendChild(mk('polygon', {
+    points: `${toX(xMax)+14},${by-4} ${toX(xMax)+22},${by} ${toX(xMax)+14},${by+4}`,
+    fill: '#333'
+  }));
+  // y-axis line + arrowhead
+  svg.appendChild(mkLine(bx, by, bx, toY(yMax) - 12,
+    { stroke: '#333', 'stroke-width': 1.5 }));
+  svg.appendChild(mk('polygon', {
+    points: `${bx-4},${toY(yMax)-12} ${bx},${toY(yMax)-20} ${bx+4},${toY(yMax)-12}`,
+    fill: '#333'
+  }));
+  // labels
+  svg.appendChild(mkText(toX(xMax) + 18, by + 20, xLab,
+    { 'font-size': 14, 'font-style': 'italic', 'font-family': 'Georgia,serif',
+      fill: '#333', 'text-anchor': 'middle' }));
+  svg.appendChild(mkText(15, MT + PH / 2, yLab,
+    { 'font-size': 14, 'font-style': 'italic', 'font-family': 'Georgia,serif',
+      fill: '#333', 'text-anchor': 'middle',
+      transform: `rotate(-90,15,${MT + PH / 2})` }));
+  // origin
+  svg.appendChild(mkText(bx - 5, by + 16, '0',
+    { 'font-size': 11, fill: '#888', 'text-anchor': 'end',
+      'font-family': 'Georgia,serif' }));
+}
+
+// ─────────────────────────────────────────────────────────────
+// EQUILIBRIUM
+// ─────────────────────────────────────────────────────────────
+function equil() {
+  const Q = (demandA - supplyA) / (DS + SS);
+  const P = demandA - DS * Q;
+  return {
+    Q: Math.max(0.05, Q),
+    P: Math.max(0.0, Math.min(FP - 0.05, P))
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// DRAW FIRM GRAPH
+// ─────────────────────────────────────────────────────────────
+function drawFirm(Pstar) {
+  const svg = document.getElementById('firmSVG');
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+  drawAxes(svg, 'q', 'P', fx, fy, FQ, FP);
+
+  const qstar   = qStarFromMC(Pstar);
+  const atcStar = atQ(ATC_PTS, qstar);
+  const avcStar = atQ(AVC_PTS, qstar);
+
+  const shutdown = Pstar < MIN_AVC;
+  const profit   = !shutdown && Pstar >= atcStar;
+  const pi       = shutdown ? null : (Pstar - atcStar) * qstar * Q_SCALE;
+
+  // ── Profit / loss rectangle (drawn first, curves on top) ──
+  if (!shutdown) {
+    const pHi = Math.max(Pstar, atcStar);
+    const pLo = Math.min(Pstar, atcStar);
+    const rx  = fx(0);
+    const ry  = fy(pHi);
+    const rw  = fx(qstar) - fx(0);
+    const rh  = fy(pLo) - fy(pHi);
+    const col = profit ? '#228B22' : '#8B1C1C';
+    svg.appendChild(mkRect(rx, ry, rw, rh, {
+      fill: col, 'fill-opacity': 0.22,
+      stroke: col, 'stroke-opacity': 0.45, 'stroke-width': 1
+    }));
+  }
+
+  // ── Cost curves ──
+  const curves = [
+    { pts: AVC_PTS, color: '#4682B4', label: 'AVC' },
+    { pts: ATC_PTS, color: '#E87B00', label: 'ATC' },
+    { pts: MC_PTS,  color: '#B8960C', label: 'MC'  },
+  ];
+  for (const { pts, color, label } of curves) {
+    svg.appendChild(mkPoly(densePts(pts), color));
+    const last = pts[pts.length - 1];
+    svg.appendChild(mkText(fx(last.q) + 5, fy(last.p) + 4, label, {
+      'font-size': 12, fill: color, 'font-weight': 'bold',
+      'font-family': 'Arial,sans-serif'
+    }));
+  }
+
+  // ── Demand / MR line ──
+  const dy = fy(Pstar);
+  const inView = dy > MT - 6 && dy < MT + PH + 6;
+  const lineY  = Math.max(MT, Math.min(MT + PH, dy));
+  if (inView) {
+    svg.appendChild(mkLine(fx(0), dy, fx(FQ - 0.15), dy,
+      { stroke: '#228B22', 'stroke-width': 2.6 }));
+  }
+  // P* label on y-axis (always, clamped to graph edge)
+  svg.appendChild(mkText(ML - 6, lineY + 4, 'P*', {
+    'font-size': 12, fill: '#228B22', 'text-anchor': 'end',
+    'font-style': 'italic', 'font-family': 'Georgia,serif'
+  }));
+
+  // ── q* dotted lines and dot ──
+  if (!shutdown) {
+    const qx   = fx(qstar);
+    const qPy  = fy(Pstar);
+    const atcY = fy(atcStar);
+    // vertical: from P* down to x-axis
+    svg.appendChild(mkLine(qx, Math.max(MT, qPy), qx, MT + PH,
+      { stroke: '#888', 'stroke-width': 1.5, 'stroke-dasharray': '4,3' }));
+    svg.appendChild(mkText(qx, MT + PH + 18, 'q*', {
+      'font-size': 12, fill: '#555', 'text-anchor': 'middle',
+      'font-style': 'italic', 'font-family': 'Georgia,serif'
+    }));
+    // horizontal: from y-axis to q* at ATC* height
+    svg.appendChild(mkLine(fx(0), atcY, qx, atcY,
+      { stroke: '#888', 'stroke-width': 1.5, 'stroke-dasharray': '4,3' }));
+    // ATC* label on y-axis
+    svg.appendChild(mkText(ML - 6, atcY + 4, 'ATC*', {
+      'font-size': 11, fill: '#555', 'text-anchor': 'end',
+      'font-style': 'italic', 'font-family': 'Georgia,serif'
+    }));
+    // dot at (q*, ATC*)
+    svg.appendChild(mk('circle', { cx: qx, cy: atcY, r: 4.5, fill: '#555' }));
+  }
+
+  updateDisplay(Pstar, qstar, atcStar, shutdown, pi);
+}
+
+// ─────────────────────────────────────────────────────────────
+// DRAW MARKET GRAPH
+// ─────────────────────────────────────────────────────────────
+function drawMarket() {
+  const svg = document.getElementById('marketSVG');
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+  drawAxes(svg, 'Q', 'P', mx, my, MQ, MP);
+
+  const eq = equil();
+
+  // ── Supply line ──
+  // P = supplyA + SS·Q  →  clip to Q∈[0,MQ], P∈[0,MP]
+  {
+    const q0 = Math.max(0, -supplyA / SS) + 0.5;
+    const q1 = Math.min(MQ, (MP - supplyA) / SS);
+    if (q0 < q1) {
+      const p0 = supplyA + SS * q0, p1 = supplyA + SS * q1;
+      svg.appendChild(mkLine(mx(q0), my(p0), mx(q1), my(p1),
+        { stroke: '#8B1C1C', 'stroke-width': 3, 'stroke-linecap': 'round' }));
+      svg.appendChild(mkText(mx(q1) - 2, my(p1) - 10, 'S', {
+        'font-size': 16, fill: '#8B1C1C', 'font-weight': 'bold',
+        'font-style': 'italic', 'font-family': 'Georgia,serif', 'text-anchor': 'end'
+      }));
+    }
+  }
+
+  // ── Demand line ──
+  // P = demandA − DS·Q  →  clip to Q∈[0,MQ], P∈[0,MP]
+  {
+    const q0 = Math.max(0, (demandA - MP) / DS);
+    const q1 = Math.min(MQ, demandA / DS);
+    if (q0 < q1) {
+      const p0 = demandA - DS * q0, p1 = demandA - DS * q1;
+      svg.appendChild(mkLine(mx(q0), my(p0), mx(q1), my(p1),
+        { stroke: '#4682B4', 'stroke-width': 3, 'stroke-linecap': 'round' }));
+      svg.appendChild(mkText(mx(q1) + 4, my(p1) - 6, 'D', {
+        'font-size': 16, fill: '#4682B4', 'font-weight': 'bold',
+        'font-style': 'italic', 'font-family': 'Georgia,serif'
+      }));
+    }
+  }
+
+  // ── Equilibrium dotted lines + dot ──
+  if (eq.Q > 0.05 && eq.P > 0) {
+    const ex = mx(eq.Q), ey = my(eq.P);
+    svg.appendChild(mkLine(ML, ey, ex, ey,
+      { stroke: '#888', 'stroke-width': 1.5, 'stroke-dasharray': '5,3' }));
+    svg.appendChild(mkLine(ex, ey, ex, MT + PH,
+      { stroke: '#888', 'stroke-width': 1.5, 'stroke-dasharray': '5,3' }));
+    svg.appendChild(mkText(ML - 6, ey + 4, 'P*', {
+      'font-size': 12, fill: '#228B22', 'text-anchor': 'end',
+      'font-style': 'italic', 'font-family': 'Georgia,serif'
+    }));
+    svg.appendChild(mkText(ex, MT + PH + 18, 'Q*', {
+      'font-size': 12, fill: '#555', 'text-anchor': 'middle',
+      'font-style': 'italic', 'font-family': 'Georgia,serif'
+    }));
+    svg.appendChild(mk('circle', { cx: ex, cy: ey, r: 5, fill: '#555' }));
+  }
+
+  return eq;
+}
+
+// ─────────────────────────────────────────────────────────────
+// PROFIT DISPLAY
+// ─────────────────────────────────────────────────────────────
+function updateDisplay(Pstar, qstar, atcStar, shutdown, pi) {
+  const el = document.getElementById('profit-display');
+  if (shutdown) {
+    el.innerHTML = `<span class="shutdown-text">Shut down &nbsp;— &nbsp;P* = ${Pstar.toFixed(2)} &lt; min AVC = ${MIN_AVC.toFixed(2)}, &nbsp;so firm produces q = 0</span>`;
+  } else {
+    const sign = pi >= 0 ? '' : '−';
+    const cls  = pi >= 0 ? 'profit-text' : 'loss-text';
+    const word = pi >= 0 ? 'Profit' : 'Loss';
+    el.innerHTML =
+      `<span class="${cls}">${word}: &thinsp;` +
+      `π = (P* − ATC*) × q* = ` +
+      `(${Pstar.toFixed(2)} − ${atcStar.toFixed(2)}) × ${(qstar * Q_SCALE).toFixed(0)} = ` +
+      `${sign}${Math.abs(pi).toFixed(0)}</span>`;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// MAIN UPDATE
+// ─────────────────────────────────────────────────────────────
+function update() {
+  const eq = drawMarket();
+  drawFirm(eq.P);
+}
+
+// ─────────────────────────────────────────────────────────────
+// DRAG INTERACTION
+// ─────────────────────────────────────────────────────────────
+let drag = null;       // 'demand' | 'supply' | null
+let dragY0 = 0;
+let dragA0 = 0;
+
+const mktSVG = document.getElementById('marketSVG');
+
+function clientPos(e) {
+  const src = e.touches ? e.touches[0] : e;
+  return { cx: src.clientX, cy: src.clientY };
+}
+
+function getSvgPos(e) {
+  const r = mktSVG.getBoundingClientRect();
+  const { cx, cy } = clientPos(e);
+  return { svgX: cx - r.left, svgY: cy - r.top, cy };
+}
+
+function hitTest(svgX, svgY) {
+  if (svgX < ML - 5 || svgX > ML + PW + 5) return null;
+  // Convert to model Q, then compare pixel distance to each curve
+  const Q  = Math.max(0, (svgX - ML) / PW * MQ);
+  const yd = my(demandA - DS * Q);
+  const ys = my(supplyA + SS * Q);
+  const THRESH = 14; // pixels
+  const dd = Math.abs(svgY - yd);
+  const ds = Math.abs(svgY - ys);
+  if (dd < THRESH && dd <= ds) return 'demand';
+  if (ds < THRESH && ds < dd)  return 'supply';
+  return null;
+}
+
+// Hover cursor
+mktSVG.addEventListener('mousemove', e => {
+  if (drag) return;
+  const { svgX, svgY } = getSvgPos(e);
+  mktSVG.style.cursor = hitTest(svgX, svgY) ? 'grab' : 'default';
+});
+
+// Start drag
+mktSVG.addEventListener('mousedown', e => {
+  const { svgX, svgY, cy } = getSvgPos(e);
+  const hit = hitTest(svgX, svgY);
+  if (!hit) return;
+  e.preventDefault();
+  drag  = hit;
+  dragY0 = cy;
+  dragA0 = hit === 'demand' ? demandA : supplyA;
+  mktSVG.style.cursor = 'grabbing';
+});
+
+// Drag move
+window.addEventListener('mousemove', e => {
+  if (!drag) return;
+  const dP = -(e.clientY - dragY0) / pxPerMP;
+  applyDrag(dP);
+});
+
+window.addEventListener('mouseup', () => {
+  if (drag) { drag = null; mktSVG.style.cursor = 'default'; }
+});
+
+// Touch
+mktSVG.addEventListener('touchstart', e => {
+  const { svgX, svgY, cy } = getSvgPos(e);
+  const hit = hitTest(svgX, svgY);
+  if (!hit) return;
+  e.preventDefault();
+  drag = hit; dragY0 = cy;
+  dragA0 = hit === 'demand' ? demandA : supplyA;
+}, { passive: false });
+
+window.addEventListener('touchmove', e => {
+  if (!drag) return;
+  e.preventDefault();
+  const dP = -(e.touches[0].clientY - dragY0) / pxPerMP;
+  applyDrag(dP);
+}, { passive: false });
+
+window.addEventListener('touchend', () => { drag = null; });
+
+function applyDrag(dP) {
+  if (drag === 'demand') {
+    demandA = Math.max(2.0, Math.min(9.0, dragA0 + dP));
+    // keep demand above supply so equilibrium exists
+    if (demandA <= supplyA + 0.3) demandA = supplyA + 0.3;
+  } else {
+    supplyA = Math.max(-3.0, Math.min(demandA - 0.3, dragA0 + dP));
+  }
+  update();
+}
+
+// ─────────────────────────────────────────────────────────────
+// INIT
+// ─────────────────────────────────────────────────────────────
+update();
+</script>
+</body>
+</html>
